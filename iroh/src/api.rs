@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::rc::Rc;
 
 use crate::getadd::{add, get};
 use anyhow::Result;
@@ -11,6 +12,7 @@ use libp2p::{
     gossipsub::{MessageId, TopicHash},
     Multiaddr, PeerId,
 };
+use mockall::automock;
 use tokio::{fs::File, io::stdin, io::AsyncReadExt};
 
 pub struct Id {
@@ -25,45 +27,46 @@ pub enum Ping {
     Multiaddr(Multiaddr),
 }
 
-pub struct Api<'a> {
-    client: &'a Client,
+pub struct Api {
+    client: Rc<Client>,
 }
 
-impl<'a> Api<'a> {
-    pub fn new(client: &'a Client) -> Api<'a> {
+#[automock]
+impl Api {
+    pub fn new(client: Client) -> Api {
+        let client = Rc::new(client);
         Api { client }
     }
 
-    pub fn p2p(&self) -> Result<P2p<'a>> {
-        Ok(P2p {
-            client: self.client.try_p2p()?,
-        })
+    pub fn p2p(&self) -> Result<P2p> {
+        let p2p_client = self.client.try_p2p()?;
+        Ok(P2p::new(p2p_client))
     }
 
-    pub fn store(&self) -> Result<Store<'a>> {
-        Ok(Store {
-            client: self.client.try_store()?,
-        })
+    pub fn store(&self) -> Result<Store> {
+        let store_client = self.client.try_store()?;
+        Ok(Store::new(store_client))
     }
 
-    pub async fn get(&self, ipfs_path: &IpfsPath, output: Option<&Path>) -> Result<()> {
-        get(self.client, ipfs_path, output).await
+    pub async fn get<'a>(&self, ipfs_path: &IpfsPath, output: Option<&'a Path>) -> Result<()> {
+        get(&self.client, ipfs_path, output).await
     }
 
     pub async fn add(&self, path: &Path, recursive: bool, no_wrap: bool) -> Result<Cid> {
-        add(self.client, path, recursive, no_wrap).await
+        add(&self.client, path, recursive, no_wrap).await
     }
 }
 
-pub struct P2p<'a> {
-    client: &'a P2pClient,
+pub struct P2p {
+    client: Rc<P2pClient>,
 }
 
-pub struct Store<'a> {
-    client: &'a StoreClient,
-}
-
-impl<'a> P2p<'a> {
+#[automock]
+impl P2p {
+    fn new(client: &P2pClient) -> Self {
+        let client = Rc::new(client.clone());
+        Self { client }
+    }
     pub async fn p2p_version(&self) -> Result<String> {
         self.client.version().await
     }
@@ -114,7 +117,7 @@ impl<'a> P2p<'a> {
         self.client.fetch_providers(cid).await
     }
 
-    pub async fn publish(&self, topic: &str, file: Option<&Path>) -> Result<MessageId> {
+    pub async fn publish<'a>(&self, topic: &str, file: Option<&'a Path>) -> Result<MessageId> {
         let mut v: Vec<u8> = Vec::new();
         if let Some(file) = file {
             let mut f = File::open(file).await?;
@@ -140,7 +143,17 @@ impl<'a> P2p<'a> {
     }
 }
 
-impl<'a> Store<'a> {
+pub struct Store {
+    client: Rc<StoreClient>,
+}
+
+#[automock]
+impl Store {
+    fn new(client: &StoreClient) -> Self {
+        let client = Rc::new(client.clone());
+        Self { client }
+    }
+
     pub async fn store_version(&self) -> Result<String> {
         self.client.version().await
     }
