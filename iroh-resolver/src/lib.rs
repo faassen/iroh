@@ -1,6 +1,7 @@
 pub mod balanced_tree;
 pub mod chunker;
 pub mod codecs;
+mod fileinfo;
 pub mod hamt;
 pub mod resolver;
 pub mod unixfs;
