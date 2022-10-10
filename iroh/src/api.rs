@@ -8,6 +8,7 @@ use crate::store::MockStore;
 use crate::store::{ClientStore, Store};
 use anyhow::Result;
 use async_trait::async_trait;
+use bytes::Bytes;
 use cid::Cid;
 use futures::stream::LocalBoxStream;
 use futures::StreamExt;
@@ -108,3 +109,15 @@ impl<'a> Api for Iroh<'a> {
         self.client.clone().watch().await.boxed()
     }
 }
+
+// struct AddTransfer {}
+
+// impl AddTransfer {
+//     pub fn size() -> u64 {
+//         0
+//     }
+
+//     fn stream<'a>() -> LocalBoxStream<'a, (Cid, Bytes, &'a Path)> {}
+
+//     async fn cid() -> Cid {}
+// }
