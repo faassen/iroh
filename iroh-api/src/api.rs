@@ -207,9 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_get_stream() {
-        let stream: Pin<
-            Box<dyn Stream<Item = Result<(RelativePathBuf, OutType<std::io::Cursor<&str>>)>>>,
-        > = Box::pin(futures::stream::iter(vec![
+        let stream = Box::pin(futures::stream::iter(vec![
             Ok((RelativePathBuf::from_path("a").unwrap(), OutType::Dir)),
             Ok((
                 RelativePathBuf::from_path("b").unwrap(),
