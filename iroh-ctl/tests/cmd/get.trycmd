@@ -25,3 +25,14 @@ error: Invalid value "/something" for '<PATH>': invalid cid
 For more information try '--help'
 
 ```
+
+Getting something that's not a CID fails too:
+
+```
+$ iroh get QmP8jTG1m9GSDJLCbeWhVSVg
+? failed
+error: Invalid value "QmP8jTG1m9GSDJLCbeWhVSVg" for '<PATH>': invalid cid
+
+For more information try '--help'
+
+```
