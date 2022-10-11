@@ -8,28 +8,28 @@ use iroh_resolver::resolver::Path as IpfsPath;
 use iroh_rpc_client::Client;
 
 impl Iroh {
-    pub fn get_stream<'b>(
-        &self,
-        root: &'b IpfsPath,
-        output: Option<&'b Path>,
-    ) -> impl Stream<Item = Result<(PathBuf, OutType<Client>)>> + 'b {
-        tracing::debug!("get {:?}", root);
-        let resolver = iroh_resolver::resolver::Resolver::new(self.get_client().clone());
-        let results = resolver.resolve_recursive_with_paths(root.clone());
-        async_stream::try_stream! {
-            tokio::pin!(results);
-            while let Some(res) = results.next().await {
-                let (path, out) = res?;
-                let path = Self::make_output_path(path, root.clone(), output.clone())?;
-                if out.is_dir() {
-                    yield (path, OutType::Dir);
-                } else {
-                    let reader = out.pretty(resolver.clone(), Default::default())?;
-                    yield (path, OutType::Reader(reader));
-                }
-            }
-        }
-    }
+    // pub fn get_stream<'b>(
+    //     &self,
+    //     root: &'b IpfsPath,
+    //     output: Option<&'b Path>,
+    // ) -> impl Stream<Item = Result<(PathBuf, OutType<Client>)>> + 'b {
+    //     tracing::debug!("get {:?}", root);
+    //     let resolver = iroh_resolver::resolver::Resolver::new(self.get_client().clone());
+    //     let results = resolver.resolve_recursive_with_paths(root.clone());
+    //     async_stream::try_stream! {
+    //         tokio::pin!(results);
+    //         while let Some(res) = results.next().await {
+    //             let (path, out) = res?;
+    //             let path = Self::make_output_path(path, root.clone(), output.clone())?;
+    //             if out.is_dir() {
+    //                 yield (path, OutType::Dir);
+    //             } else {
+    //                 let reader = out.pretty(resolver.clone(), Default::default())?;
+    //                 yield (path, OutType::Reader(reader));
+    //             }
+    //         }
+    //     }
+    // }
 
     /// Adjusts the full path to replace the root with any given output path
     /// if it exists.

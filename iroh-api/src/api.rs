@@ -12,22 +12,31 @@ use futures::stream::LocalBoxStream;
 use futures::FutureExt;
 use futures::Stream;
 use futures::StreamExt;
-use iroh_resolver::resolver::Path as IpfsPath;
+use iroh_resolver::resolver::{OutPrettyReader, Path as IpfsPath};
 use iroh_resolver::{resolver, unixfs_builder};
 use iroh_rpc_client::Client;
 use iroh_rpc_client::StatusTable;
 use iroh_util::{iroh_config_path, make_config};
 #[cfg(feature = "testing")]
 use mockall::automock;
+use relative_path::RelativePathBuf;
+use tokio::io::AsyncRead;
 
 pub struct Iroh {
     client: Client,
 }
 
-pub enum OutType<T: resolver::ContentLoader> {
+pub enum OutType<R>
+where
+    R: AsyncRead + Unpin + ?Sized,
+{
     Dir,
-    Reader(resolver::OutPrettyReader<T>),
+    Reader(Box<R>),
 }
+
+// Note: `#[async_trait]` is deliberately not in use for this trait, because it
+// became very hard to express what we wanted once streams were involved.
+// Instead we spell things out explicitly without magic.
 
 #[cfg_attr(feature= "testing", automock(type P = MockP2p;))]
 pub trait Api {
@@ -38,13 +47,12 @@ pub trait Api {
     fn get<'a>(
         &'a self,
         ipfs_path: &'a IpfsPath,
-        output: Option<&'a Path>,
-    ) -> BoxFuture<'_, Result<()>>;
+        output_path: Option<&'a Path>,
+    ) -> LocalBoxFuture<'_, Result<()>>;
     fn get_stream<'a>(
         &'a self,
         ipfs_path: &'a IpfsPath,
-        output: Option<&'a Path>,
-    ) -> LocalBoxStream<'_, Result<(PathBuf, OutType<Client>)>>;
+    ) -> LocalBoxStream<'_, Result<(RelativePathBuf, OutType<OutPrettyReader<Client>>)>>;
     fn add<'a>(
         &'a self,
         path: &'a Path,
@@ -83,30 +91,32 @@ impl Iroh {
         Self { client }
     }
 
-    pub async fn save_get_stream(
-        blocks: impl Stream<Item = Result<(PathBuf, OutType<Client>)>>,
-    ) -> Result<()> {
+    /// take a stream of blocks as from `get_stream` and write them to the filesystem
+    pub async fn save_get_stream<R>(
+        root_path: &Path,
+        blocks: impl Stream<Item = Result<(RelativePathBuf, OutType<R>)>>,
+    ) -> Result<()>
+    where
+        R: AsyncRead + Unpin + ?Sized,
+    {
         tokio::pin!(blocks);
         while let Some(block) = blocks.next().await {
             let (path, out) = block?;
+            let full_path = path.to_path(root_path);
             match out {
                 OutType::Dir => {
-                    tokio::fs::create_dir_all(path).await?;
+                    tokio::fs::create_dir_all(full_path).await?;
                 }
                 OutType::Reader(mut reader) => {
                     if let Some(parent) = path.parent() {
-                        tokio::fs::create_dir_all(parent).await?;
+                        tokio::fs::create_dir_all(parent.to_path(root_path)).await?;
                     }
-                    let mut f = tokio::fs::File::create(path).await?;
+                    let mut f = tokio::fs::File::create(full_path).await?;
                     tokio::io::copy(&mut reader, &mut f).await?;
                 }
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn get_client(&self) -> &Client {
-        &self.client
     }
 }
 
@@ -121,48 +131,36 @@ impl Api for Iroh {
     fn get<'a>(
         &'a self,
         ipfs_path: &'a IpfsPath,
-        output: Option<&'a Path>,
-    ) -> BoxFuture<'_, Result<()>> {
-        async move {
-            let blocks = self.get_stream(ipfs_path, output);
-            tokio::pin!(blocks);
-            while let Some(block) = blocks.next().await {
-                let (path, out) = block?;
-                match out {
-                    OutType::Dir => {
-                        tokio::fs::create_dir_all(path).await?;
-                    }
-                    OutType::Reader(mut reader) => {
-                        if let Some(parent) = path.parent() {
-                            tokio::fs::create_dir_all(parent).await?;
-                        }
-                        let mut f = tokio::fs::File::create(path).await?;
-                        tokio::io::copy(&mut reader, &mut f).await?;
-                    }
-                }
-            }
-            Ok(())
-        }
-        .boxed()
+        output_path: Option<&'a Path>,
+    ) -> LocalBoxFuture<'_, Result<()>> {
+        // TODO(faassen) this should be testable but right now can't be
+        let root_path = if let Some(output_path) = output_path {
+            output_path
+        } else {
+            // TODO(faassen) needs to fall back to CID
+            Path::new(".")
+        };
+        // let root_path = output_path.unwrap_or_else(|| Path::new("."));
+        Iroh::save_get_stream(root_path, self.get_stream(ipfs_path)).boxed_local()
     }
+
     fn get_stream<'a>(
         &'a self,
-        root: &'a IpfsPath,
-        output: Option<&'a Path>,
-    ) -> LocalBoxStream<'_, Result<(PathBuf, OutType<Client>)>> {
-        tracing::debug!("get {:?}", root);
-        let resolver = iroh_resolver::resolver::Resolver::new(self.get_client().clone());
-        let results = resolver.resolve_recursive_with_paths(root.clone());
+        ipfs_path: &'a IpfsPath,
+    ) -> LocalBoxStream<'_, Result<(RelativePathBuf, OutType<OutPrettyReader<Client>>)>> {
+        tracing::debug!("get {:?}", ipfs_path);
+        let resolver = iroh_resolver::resolver::Resolver::new(self.client.clone());
+        let results = resolver.resolve_recursive_with_paths(ipfs_path.clone());
         async_stream::try_stream! {
             tokio::pin!(results);
             while let Some(res) = results.next().await {
-                let (path, out) = res?;
-                let path = Iroh::make_output_path(path, root.clone(), output.clone())?;
+                let (relative_ipfs_path, out) = res?;
+                let relative_path = RelativePathBuf::from_path(&relative_ipfs_path.to_string_without_type())?;
                 if out.is_dir() {
-                    yield (path, OutType::Dir);
+                    yield (relative_path, OutType::Dir);
                 } else {
                     let reader = out.pretty(resolver.clone(), Default::default())?;
-                    yield (path, OutType::Reader(reader));
+                    yield (relative_path, OutType::Reader(Box::new(reader)));
                 }
             }
         }
@@ -177,7 +175,7 @@ impl Api for Iroh {
     ) -> LocalBoxFuture<'_, Result<Cid>> {
         async move {
             let providing_client = iroh_resolver::unixfs_builder::StoreAndProvideClient {
-                client: Box::new(self.get_client()),
+                client: Box::new(&self.client),
             };
             if path.is_dir() {
                 unixfs_builder::add_dir(Some(&providing_client), path, !no_wrap, recursive).await
@@ -199,5 +197,28 @@ impl Api for Iroh {
     ) -> LocalBoxFuture<'static, LocalBoxStream<'static, iroh_rpc_client::StatusTable>> {
         let client = self.client.clone();
         async { client.watch().await.boxed_local() }.boxed_local()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+
+    #[tokio::test]
+    async fn test_save_get_stream() {
+        let stream: Pin<
+            Box<dyn Stream<Item = Result<(RelativePathBuf, OutType<std::io::Cursor<&str>>)>>>,
+        > = Box::pin(futures::stream::iter(vec![
+            Ok((RelativePathBuf::from_path("a").unwrap(), OutType::Dir)),
+            Ok((
+                RelativePathBuf::from_path("b").unwrap(),
+                OutType::Reader(Box::new(std::io::Cursor::new("hello"))),
+            )),
+        ]));
+        // TODO(faassen) use tempfile crate so things get cleaned up
+        Iroh::save_get_stream(Path::new("/tmp"), stream)
+            .await
+            .unwrap();
     }
 }
