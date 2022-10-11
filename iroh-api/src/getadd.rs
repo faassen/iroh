@@ -33,7 +33,11 @@ impl Iroh {
 
     /// Adjusts the full path to replace the root with any given output path
     /// if it exists.
-    fn make_output_path(full: IpfsPath, root: IpfsPath, output: Option<&Path>) -> Result<PathBuf> {
+    pub(crate) fn make_output_path(
+        full: IpfsPath,
+        root: IpfsPath,
+        output: Option<&Path>,
+    ) -> Result<PathBuf> {
         if let Some(output) = output {
             let root_str = &root.to_string()[..];
             let full_as_path = PathBuf::from(full.to_string());

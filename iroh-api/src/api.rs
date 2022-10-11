@@ -10,6 +10,7 @@ use cid::Cid;
 use futures::future::{BoxFuture, LocalBoxFuture};
 use futures::stream::LocalBoxStream;
 use futures::FutureExt;
+use futures::Stream;
 use futures::StreamExt;
 use iroh_resolver::resolver::Path as IpfsPath;
 use iroh_resolver::{resolver, unixfs_builder};
@@ -39,6 +40,11 @@ pub trait Api {
         ipfs_path: &'a IpfsPath,
         output: Option<&'a Path>,
     ) -> BoxFuture<'_, Result<()>>;
+    fn get_stream<'a>(
+        &'a self,
+        ipfs_path: &'a IpfsPath,
+        output: Option<&'a Path>,
+    ) -> LocalBoxStream<'_, Result<(PathBuf, OutType<Client>)>>;
     fn add<'a>(
         &'a self,
         path: &'a Path,
@@ -75,6 +81,28 @@ impl Iroh {
 
     fn from_client(client: Client) -> Self {
         Self { client }
+    }
+
+    pub async fn save_get_stream(
+        blocks: impl Stream<Item = Result<(PathBuf, OutType<Client>)>>,
+    ) -> Result<()> {
+        tokio::pin!(blocks);
+        while let Some(block) = blocks.next().await {
+            let (path, out) = block?;
+            match out {
+                OutType::Dir => {
+                    tokio::fs::create_dir_all(path).await?;
+                }
+                OutType::Reader(mut reader) => {
+                    if let Some(parent) = path.parent() {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
+                    let mut f = tokio::fs::File::create(path).await?;
+                    tokio::io::copy(&mut reader, &mut f).await?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn get_client(&self) -> &Client {
@@ -116,6 +144,29 @@ impl Api for Iroh {
             Ok(())
         }
         .boxed()
+    }
+    fn get_stream<'a>(
+        &'a self,
+        root: &'a IpfsPath,
+        output: Option<&'a Path>,
+    ) -> LocalBoxStream<'_, Result<(PathBuf, OutType<Client>)>> {
+        tracing::debug!("get {:?}", root);
+        let resolver = iroh_resolver::resolver::Resolver::new(self.get_client().clone());
+        let results = resolver.resolve_recursive_with_paths(root.clone());
+        async_stream::try_stream! {
+            tokio::pin!(results);
+            while let Some(res) = results.next().await {
+                let (path, out) = res?;
+                let path = Iroh::make_output_path(path, root.clone(), output.clone())?;
+                if out.is_dir() {
+                    yield (path, OutType::Dir);
+                } else {
+                    let reader = out.pretty(resolver.clone(), Default::default())?;
+                    yield (path, OutType::Reader(reader));
+                }
+            }
+        }
+        .boxed_local()
     }
 
     fn add<'a>(
