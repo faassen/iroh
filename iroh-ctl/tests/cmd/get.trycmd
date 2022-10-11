@@ -6,11 +6,22 @@ Saving file(s) to QmP8jTG1m9GSDJLCbeWhVSVgEzCPPwXRdCRuJtQ5Tz9Kc9
 
 ```
 
-We can also get a ipfs path:
+We can also get a ipfs path to a CID:
 
 
 ```
 $ iroh get /ipfs/QmP8jTG1m9GSDJLCbeWhVSVgEzCPPwXRdCRuJtQ5Tz9Kc9
 Saving file(s) to QmP8jTG1m9GSDJLCbeWhVSVgEzCPPwXRdCRuJtQ5Tz9Kc9
+
+```
+
+Getting something that's not a proper path to a CID fails with an error:
+
+```
+$ iroh get /something
+? failed
+error: Invalid value "/something" for '<PATH>': invalid cid
+
+For more information try '--help'
 
 ```
